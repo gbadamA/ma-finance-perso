@@ -1,0 +1,19 @@
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+.env
+.env.local
+apps/mobile/.env
+supabase/.temp/
+supabase/.branches/
+coverage/
+
+# Dossiers natifs generes par `expo prebuild` (workflow CNG : ils se regenerent)
+apps/mobile/android/
+apps/mobile/ios/
+# Artefacts de build
+*.apk
+*.aab
+*.keystore

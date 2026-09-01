@@ -1,0 +1,21 @@
+{
+  "name": "ma-finance-perso",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Ma Finance Perso — gestion financière personnelle 100% mobile (Expo + Supabase), remplace les 5 classeurs Excel « Smart Finance Pro »",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "mobile": "pnpm --filter mobile start",
+    "test": "pnpm --filter @mfp/core test",
+    "typecheck": "pnpm --filter @mfp/core exec tsc --noEmit && pnpm --filter mobile exec tsc --noEmit",
+    "db:push": "supabase db push",
+    "db:reset": "supabase db reset",
+    "db:types": "supabase gen types typescript --local > packages/supabase/src/database.types.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}
