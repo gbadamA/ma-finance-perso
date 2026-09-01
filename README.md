@@ -143,6 +143,61 @@ comme une case du classeur.
 
 ---
 
+## Générer l'APK Android
+
+Le projet natif n'est **pas** dans git (workflow CNG) : il se régénère depuis `app.json`.
+
+```bash
+cd apps/mobile
+npx expo prebuild --platform android --clean
+cd android && ./gradlew assembleRelease
+```
+
+L'APK sort dans `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`.
+
+### ⚠️ La clé de signature
+
+Elle vit dans **`apps/mobile/credentials/`** — volontairement hors de `android/`, que
+`prebuild --clean` efface. Ce dossier est dans `.gitignore`.
+
+**Sauvegarde-le hors du poste.** Perdre `release.keystore` rend impossible toute mise à
+jour d'un APK déjà installé : Android refuse une nouvelle signature sur un paquet existant,
+il faudrait désinstaller (et perdre les données locales) ou republier sous un autre nom.
+
+Après un `prebuild --clean`, le bloc de signature de `android/app/build.gradle` est à
+réappliquer — il lit `../credentials/keystore.properties` et retombe sur la clé de debug
+si le fichier est absent, pour qu'un poste sans la clé puisse quand même bâtir un APK de test.
+
+### Installer sur un téléphone
+
+```bash
+adb install -r apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+```
+
+Ou transfère le fichier et ouvre-le (autoriser « sources inconnues »).
+
+---
+
+## Hébergement
+
+**Il n'y a pas de serveur à héberger.** Le cahier des charges (§0) exclut le dashboard web :
+l'application est 100 % mobile et son backend est **Supabase managé**. Pas d'API Node, pas de
+conteneur à déployer.
+
+Le « déploiement » se résume donc à :
+
+1. créer un projet sur [supabase.com](https://supabase.com) — l'offre gratuite suffit
+   (500 Mo de base, 1 Go de stockage, 50 000 utilisateurs actifs/mois) ;
+2. `pnpm db:push` pour appliquer le schéma et les policies RLS ;
+3. renseigner `apps/mobile/.env` et rebâtir l'APK.
+
+> Railway n'a plus d'offre gratuite depuis août 2023 (crédit d'essai unique, puis 5 $/mois),
+> et n'apporterait rien ici : il faudrait y auto-héberger toute la pile Supabase
+> (Postgres + Auth + PostgREST + Storage), soit plusieurs conteneurs, en perdant l'Auth et
+> la RLS managées sur lesquelles repose l'isolation des données.
+
+---
+
 ## Points d'attention
 
 - **Test sur téléphone réel via Expo Go**, jamais d'émulateur.

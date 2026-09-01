@@ -17,3 +17,5 @@ apps/mobile/ios/
 *.apk
 *.aab
 *.keystore
+# Cle de signature : jamais dans git, a sauvegarder hors du poste
+apps/mobile/credentials/
