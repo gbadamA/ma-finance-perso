@@ -149,9 +149,25 @@ Le projet natif n'est **pas** dans git (workflow CNG) : il se régénère depuis
 
 ```bash
 cd apps/mobile
-npx expo prebuild --platform android --clean
+node ../../node_modules/expo/bin/cli prebuild --platform android --clean
+node scripts/apply-signing.mjs        # signature release
+node scripts/apply-native-build.mjs   # .cxx hors de l'arborescence source
 cd android && ./gradlew assembleRelease
 ```
+
+⚠️ **`JAVA_HOME` doit pointer sur un JDK 21**, pas sur le JBR d'Android Studio
+(un JDK 25) : AGP lit la sortie CMake ligne par ligne et lève une exception sur
+son avertissement « restricted method in java.lang.System ».
+
+⚠️ **`npx expo` ne fonctionne pas depuis `apps/mobile`** : `node-linker=hoisted`
+remonte les paquets à la racine du monorepo, il faut appeler le CLI par son chemin.
+
+Les deux scripts sont à rejouer après **chaque** `prebuild`, qui régénère `android/` :
+
+| Script | Ce qu'il corrige |
+|---|---|
+| `apply-signing.mjs` | le template signe la release avec la clé de **debug** — un APK non ré-installable en mise à jour |
+| `apply-native-build.mjs` | `.cxx` est créé DANS l'arborescence source, donc dans un `file(GLOB CONFIGURE_DEPENDS)` : CMake régénère en boucle et ninja abandonne au 100e tour |
 
 L'APK sort dans `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`.
 
