@@ -334,6 +334,33 @@ pnpm db:studio                  # inspecte la base dans le navigateur
 L'API a besoin de `apps/api/.env` (voir `.env.example`) :
 `DATABASE_URL` (chaîne **pooled** de Neon) et `JWT_SECRET` (32 caractères minimum).
 
+```bash
+pnpm verify:api                 # 56 contrôles de bout en bout contre l'API locale
+API_URL=https://…onrender.com pnpm verify:api
+```
+
+⚠️ `pnpm verify:api` crée des comptes de test horodatés. **Jamais contre une base de production.**
+
+### Base jetable pour développer
+
+```bash
+docker run -d --name mfp-pg -e POSTGRES_PASSWORD=mfp -e POSTGRES_DB=mfp -p 55432:5432 postgres:16-alpine
+```
+
+### APK
+
+```bash
+cd apps/mobile/android
+ANDROID_HOME="C:/Users/mutiy/AppData/Local/Android/Sdk" JAVA_HOME="C:/Program Files/Java/jdk-21"   ./gradlew.bat assembleRelease --no-daemon
+```
+
+⚠️ **JDK 21, pas 25** (le JBR d'Android Studio) : AGP échoue sur son avertissement
+« restricted method ». Et `ANDROID_HOME` doit être passé explicitement — il n'y a pas de
+`local.properties` dans le dépôt.
+
+L'URL de l'API est figée dans `app.json` (`extra.apiUrl`) : c'est elle qui part dans l'APK.
+`EXPO_PUBLIC_API_URL` (dans `.env`) la surcharge en développement.
+
 Depuis la racine du kit, pour tester sur le téléphone :
 
 ```powershell
