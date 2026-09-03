@@ -105,8 +105,14 @@ function setupDocs(app: INestApplication): void {
 
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup("api/docs", app, document, {
-    // Sans cela, le jeton saisi est perdu a chaque rechargement de la page.
-    swaggerOptions: { persistAuthorization: true },
+    swaggerOptions: {
+      // Sans cela, le jeton saisi est perdu a chaque rechargement de la page.
+      persistAuthorization: true,
+      // Swagger classe les groupes par ordre d'apparition dans les routes, pas
+      // par nom : sans ce tri, « 3 · Ecritures » passe avant « 2 · Lecture » et
+      // la numerotation des etiquettes ne sert a rien.
+      tagsSorter: "alpha",
+    },
     customSiteTitle: "Ma Finance Perso — API",
   });
 }
