@@ -351,7 +351,7 @@ docker run -d --name mfp-pg -e POSTGRES_PASSWORD=mfp -e POSTGRES_DB=mfp -p 55432
 
 ```bash
 cd apps/mobile/android
-ANDROID_HOME="C:/Users/mutiy/AppData/Local/Android/Sdk" JAVA_HOME="C:/Program Files/Java/jdk-21"   ./gradlew.bat assembleRelease --no-daemon
+ANDROID_HOME="$LOCALAPPDATA/Android/Sdk" JAVA_HOME="C:/Program Files/Java/jdk-21"   ./gradlew.bat assembleRelease --no-daemon
 ```
 
 ⚠️ **JDK 21, pas 25** (le JBR d'Android Studio) : AGP échoue sur son avertissement
