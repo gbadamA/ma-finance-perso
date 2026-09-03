@@ -1,0 +1,49 @@
+# Déploiement de l'API sur Render.
+#
+# ⚠️ **Aucune base de données déclarée ici**, volontairement. Le Postgres
+# `plan: free` de Render est supprimé au bout de 30 jours — c'est exactement ce
+# qui a mis hors service l'API de Preventix-360. La base vit sur **Neon**, dont
+# le plan gratuit n'expire pas, et `DATABASE_URL` est saisie à la main.
+#
+# Le plan `free` d'un service web, lui, ne disparaît pas : il endort seulement
+# l'instance après 15 min d'inactivité. Le premier appel qui suit met ~30 s à
+# répondre, le temps du réveil — l'app mobile doit en tenir compte (elle affiche
+# son mode démonstration tant que l'API ne répond pas).
+
+services:
+  - type: web
+    name: ma-finance-perso-api
+    runtime: node
+    plan: free
+    region: frankfurt # le plus proche d'Abidjan parmi les régions Render
+    rootDir: .
+
+    # `--filter` : le dépôt est un monorepo pnpm, seule l'API est construite.
+    # `prisma migrate deploy` applique les migrations en attente à chaque
+    # déploiement — jamais `migrate dev`, qui peut réinitialiser la base.
+    buildCommand: >-
+      corepack enable &&
+      pnpm install --frozen-lockfile &&
+      pnpm --filter api exec prisma generate &&
+      pnpm --filter api exec prisma migrate deploy &&
+      pnpm --filter api exec nest build
+
+    startCommand: node apps/api/dist/main.js
+
+    healthCheckPath: /api/health
+
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+
+      # Saisie à la main dans Render > Environment.
+      # Prendre la chaîne **pooled** de Neon (`...-pooler...`) : Render peut
+      # lancer plusieurs instances, et des connexions directes épuiseraient
+      # vite le quota du plan gratuit.
+      - key: DATABASE_URL
+        sync: false
+
+      # Généré par Render à la création, puis stable. Le régénérer invaliderait
+      # toutes les sessions ouvertes.
+      - key: JWT_SECRET
+        generateValue: true

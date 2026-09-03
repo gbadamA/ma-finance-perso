@@ -1,16 +1,15 @@
 /**
  * Photos de reçus — §6.1 du cahier des charges.
  *
- * Le bucket `receipts` est **privé** et sa policy exige que le premier segment
- * du chemin soit l'identifiant de l'utilisateur (`{user_id}/{mois}/{fichier}`).
- * On construit donc le chemin ici, à partir de la session — jamais à partir
- * d'une valeur venue de l'écran.
+ * Le fichier part vers `POST /receipts` et l'API le range sous l'utilisateur du
+ * jeton. L'app ne choisit donc ni chemin ni propriétaire : il n'y a plus rien
+ * ici qu'un écran pourrait falsifier, contrairement au chemin de bucket qu'on
+ * construisait avant.
  */
 
 import * as ImagePicker from "expo-image-picker";
 import { File } from "expo-file-system";
-import { RECEIPTS_BUCKET, receiptPath } from "@mfp/supabase";
-import { supabase } from "./supabase";
+import { apiRequest, authHeaders, isApiConfigured, receiptEndpoint } from "./api";
 
 export type PickedReceipt = {
   /** URI locale, affichable immédiatement dans un aperçu. */
@@ -19,7 +18,7 @@ export type PickedReceipt = {
   fileName: string;
 };
 
-/** Taille au-delà de laquelle le bucket refuse le fichier (cf. migration RLS). */
+/** Même plafond que celui appliqué par l'API. */
 const MAX_BYTES = 5 * 1024 * 1024;
 
 /**
@@ -62,68 +61,58 @@ function toPicked(result: ImagePicker.ImagePickerResult): PickedReceipt | null {
   };
 }
 
-export type UploadResult = { path: string | null; error: string | null };
+export type UploadResult = { id: string | null; error: string | null };
 
 /**
- * Envoie le fichier et renvoie son chemin dans le bucket.
+ * Envoie le fichier et renvoie son identifiant.
  *
  * ⚠️ Pas de mise en file hors-ligne : le fichier vit dans le cache de
  * l'appareil, que le système peut vider avant le rejeu. On promettrait un envoi
  * qu'on ne peut pas tenir. L'appelant enregistre alors la dépense **sans** son
  * reçu et le dit à l'utilisateur.
  */
-export async function uploadReceipt(
-  picked: PickedReceipt,
-  /** `MonthKey` de la dépense — organise le bucket par mois. */
-  month: string,
-): Promise<UploadResult> {
-  if (!supabase) return { path: null, error: "Mode démonstration : reçu non envoyé." };
+export async function uploadReceipt(picked: PickedReceipt): Promise<UploadResult> {
+  if (!isApiConfigured) return { id: null, error: "Mode démonstration : reçu non envoyé." };
 
-  const { data: session } = await supabase.auth.getUser();
-  const userId = session.user?.id;
-  if (!userId) return { path: null, error: "Session expirée." };
-
-  // Lecture via l'API `File` d'expo-file-system plutôt que `fetch(file://)` :
-  // le polyfill fetch de React Native n'implémente pas `arrayBuffer()` de façon
-  // fiable sur les URI locales, et l'échec est silencieux selon la plateforme.
-  let body: Uint8Array;
+  // Le poids est vérifié avant l'envoi : sur une connexion mobile, découvrir le
+  // refus après avoir téléversé 8 Mo coûte du forfait pour rien.
   try {
-    body = await new File(picked.uri).bytes();
+    const size = new File(picked.uri).size;
+    if (size !== null && size > MAX_BYTES) {
+      return { id: null, error: "Reçu trop lourd (5 Mo maximum)." };
+    }
   } catch {
-    return { path: null, error: "Image illisible sur l'appareil." };
+    return { id: null, error: "Image illisible sur l'appareil." };
   }
 
-  if (body.byteLength > MAX_BYTES) {
-    return { path: null, error: "Reçu trop lourd (5 Mo maximum)." };
+  // React Native accepte `{ uri, name, type }` dans un `FormData` et lit le
+  // fichier lui-même pendant l'envoi. On évite ainsi de charger l'image entière
+  // en mémoire JavaScript, ce que faisait la lecture en `Uint8Array`.
+  const form = new FormData();
+  form.append("file", {
+    uri: picked.uri,
+    name: picked.fileName,
+    type: picked.mimeType,
+  } as unknown as Blob);
+
+  try {
+    const { id } = await apiRequest<{ id: string }>("/receipts", { method: "POST", form });
+    return { id, error: null };
+  } catch (error) {
+    return { id: null, error: error instanceof Error ? error.message : "Envoi impossible." };
   }
-
-  // Nom unique : deux reçus pris la même minute ne doivent pas s'écraser.
-  const extension = picked.fileName.split(".").pop()?.toLowerCase() || "jpg";
-  const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
-  const path = receiptPath(userId, month, name);
-
-  const { error } = await supabase.storage
-    .from(RECEIPTS_BUCKET)
-    .upload(path, body, { contentType: picked.mimeType, upsert: false });
-
-  return error ? { path: null, error: error.message } : { path, error: null };
 }
 
 /**
- * URL temporaire d'affichage d'un reçu.
- * Le bucket étant privé, il n'existe pas d'URL publique : on signe à la demande,
- * pour une heure — assez pour consulter, trop court pour être partagé par erreur.
+ * De quoi afficher un reçu dans un `<Image>`.
+ *
+ * L'endpoint exige le jeton : on renvoie donc l'en-tête avec l'URL, plutôt
+ * qu'une URL signée autoporteuse comme le faisait le stockage Supabase.
+ * Renvoie `null` si la session n'est pas ouverte.
  */
-export async function receiptUrl(path: string): Promise<string | null> {
-  if (!supabase) return null;
-  const { data, error } = await supabase.storage
-    .from(RECEIPTS_BUCKET)
-    .createSignedUrl(path, 3600);
-  return error ? null : data.signedUrl;
-}
-
-export async function deleteReceipt(path: string): Promise<string | null> {
-  if (!supabase) return null;
-  const { error } = await supabase.storage.from(RECEIPTS_BUCKET).remove([path]);
-  return error?.message ?? null;
+export async function receiptSource(
+  id: string,
+): Promise<{ uri: string; headers: Record<string, string> } | null> {
+  const headers = await authHeaders();
+  return headers ? { uri: receiptEndpoint(id), headers } : null;
 }

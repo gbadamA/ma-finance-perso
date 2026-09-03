@@ -15,8 +15,7 @@
     "declaration": true,
     "paths": {
       "@mfp/core": ["./packages/core/src/index.ts"],
-      "@mfp/design-tokens": ["./packages/design-tokens/src/index.ts"],
-      "@mfp/supabase": ["./packages/supabase/src/index.ts"]
+      "@mfp/design-tokens": ["./packages/design-tokens/src/index.ts"]
     }
   }
 }

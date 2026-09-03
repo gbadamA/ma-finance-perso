@@ -6,8 +6,6 @@ web-build/
 .env
 .env.local
 apps/mobile/.env
-supabase/.temp/
-supabase/.branches/
 coverage/
 
 # Dossiers natifs generes par `expo prebuild` (workflow CNG : ils se regenerent)

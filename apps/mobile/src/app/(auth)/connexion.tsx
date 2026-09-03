@@ -13,7 +13,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ShieldCheck } from "lucide-react-native";
 import { useAuth } from "../../lib/auth";
-import { isSupabaseConfigured } from "../../lib/supabase";
+import { isApiConfigured } from "../../lib/api";
 import { useTheme } from "../../lib/theme";
 import { Card, Touchable, Txt } from "../../components/primitives";
 
@@ -22,7 +22,7 @@ type Mode = "connexion" | "inscription";
 export default function Connexion() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
-  const { signIn, signUp, resetPassword, enterDemo } = useAuth();
+  const { signIn, signUp, enterDemo } = useAuth();
 
   const [mode, setMode] = useState<Mode>("connexion");
   const [email, setEmail] = useState("");
@@ -44,23 +44,10 @@ export default function Connexion() {
         ? await signIn(email.trim(), password)
         : await signUp(email.trim(), password);
     setBusy(false);
+    // Pas de confirmation par e-mail : l'API n'a pas de service d'envoi, et
+    // l'inscription ouvre directement la session. Le message d'attente qui
+    // figurait ici laissait l'utilisateur sur un écran déjà dépassé.
     if (result.error) setError(result.error);
-    else if (mode === "inscription") {
-      setNotice("Compte créé. Confirmez votre e-mail puis connectez-vous.");
-      setMode("connexion");
-    }
-  };
-
-  const forgotten = async () => {
-    if (!email.trim()) {
-      setError("Saisissez votre e-mail pour recevoir le lien de réinitialisation.");
-      return;
-    }
-    setBusy(true);
-    const result = await resetPassword(email.trim());
-    setBusy(false);
-    setError(result.error);
-    if (!result.error) setNotice("Lien de réinitialisation envoyé.");
   };
 
   const inputStyle = {
@@ -193,27 +180,20 @@ export default function Connexion() {
                   {mode === "connexion" ? "Créer un compte" : "J'ai déjà un compte"}
                 </Txt>
               </Touchable>
-              {mode === "connexion" ? (
-                <Touchable noScale onPress={forgotten}>
-                  <Txt variant="caption" muted>
-                    Mot de passe oublié ?
-                  </Txt>
-                </Touchable>
-              ) : null}
             </View>
           </Card>
         </Animated.View>
 
-        {/* Sans projet Supabase configure, la connexion ne peut pas aboutir :
-            on propose explicitement la demonstration plutot que de laisser
-            l'utilisateur buter sur une erreur reseau incomprehensible. */}
-        {!isSupabaseConfigured ? (
+        {/* Sans API configuree, la connexion ne peut pas aboutir : on propose
+            explicitement la demonstration plutot que de laisser l'utilisateur
+            buter sur une erreur reseau incomprehensible. */}
+        {!isApiConfigured ? (
           <Animated.View entering={FadeInDown.duration(theme.motion.duration.normal).delay(160)}>
             <Card alt style={{ gap: theme.spacing.md }}>
               <Txt variant="h3">Mode démonstration</Txt>
               <Txt variant="caption" muted>
-                Aucun projet Supabase n'est configuré (apps/mobile/.env). Vous pouvez
-                explorer l'application avec un jeu de données local sur 24 mois.
+                Aucune API n'est configurée (apps/mobile/.env). Vous pouvez explorer
+                l'application avec un jeu de données local sur 24 mois.
               </Txt>
               <Touchable
                 onPress={enterDemo}

@@ -70,11 +70,11 @@ export default function SaisieDepense() {
     // Le reçu part AVANT la dépense : si l'envoi échoue, on enregistre quand
     // même la dépense (l'essentiel) et on le dit — plutôt que de perdre la
     // saisie parce qu'une photo n'est pas passée.
-    let receiptPath: string | undefined;
+    let receiptId: string | undefined;
     let receiptFailure: string | null = null;
     if (receipt) {
-      const upload = await uploadReceipt(receipt, toMonthKey(date));
-      if (upload.path) receiptPath = upload.path;
+      const upload = await uploadReceipt(receipt);
+      if (upload.id) receiptId = upload.id;
       else receiptFailure = upload.error;
     }
 
@@ -83,7 +83,7 @@ export default function SaisieDepense() {
       spentOn: date,
       amount: amount!,
       note,
-      receiptPath,
+      receiptId,
     });
     setBusy(false);
 

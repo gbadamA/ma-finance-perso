@@ -79,15 +79,15 @@ export default function Reglages() {
     setSaving(true);
     const result = await updateSettings({
       currency: draft.currency,
-      birth_date: birth || null,
-      safe_withdrawal_rate: draft.safeWithdrawalRate,
-      inflation_rate: draft.inflationRate,
-      expected_return: draft.expectedReturn,
-      monthly_investment: draft.monthlyInvestment,
-      average_window_months: draft.averageWindowMonths,
-      drift_threshold: draft.driftThreshold,
-      life_expectancy: draft.lifeExpectancy,
-      inheritance_target_age: draft.inheritanceTargetAge,
+      birthDate: birth || null,
+      safeWithdrawalRate: draft.safeWithdrawalRate,
+      inflationRate: draft.inflationRate,
+      expectedReturn: draft.expectedReturn,
+      monthlyInvestment: draft.monthlyInvestment,
+      averageWindowMonths: draft.averageWindowMonths,
+      driftThreshold: draft.driftThreshold,
+      lifeExpectancy: draft.lifeExpectancy,
+      inheritanceTargetAge: draft.inheritanceTargetAge,
     });
     setSaving(false);
     if (result.error) setMessage(result.error);
@@ -117,7 +117,7 @@ export default function Reglages() {
     }
     setBiometric(next);
     lock.setEnabled(next);
-    const result = await updateSettings({ biometric_lock: next });
+    const result = await updateSettings({ biometricLock: next });
     if (result.error) setMessage(result.error);
     else await refresh();
   };

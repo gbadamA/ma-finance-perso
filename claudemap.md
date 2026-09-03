@@ -50,18 +50,27 @@
 > ⚠️ **Versions natives** : ne jamais les corriger à la main — lancer `pnpm --filter mobile fix`
 > (= `expo install --fix`).
 
-### Backend — **Supabase** (managé, rien à héberger)
+### Backend — **API NestJS + Postgres Neon**
 | Rôle | Choix |
 |---|---|
-| Base | **PostgreSQL** managé |
-| Auth | **Supabase Auth** — email + mot de passe (Google/Apple en option ultérieure) |
-| **Isolation** | **RLS `user_id = auth.uid()` sur CHAQUE table métier**, sans exception |
-| Fichiers | **Supabase Storage** — photos de reçus (bucket privé, chemin `{user_id}/…`) |
-| Types | `supabase gen types typescript` → `packages/supabase/src/database.types.ts` |
+| API | **NestJS 12**, préfixe global `/api`, hébergée sur **Render** (plan gratuit) |
+| Base | **PostgreSQL managé chez Neon** (plan gratuit : 0,5 Go, **sans expiration**) |
+| ORM | **Prisma 7** + `@prisma/adapter-pg` ; migrations SQL versionnées |
+| Auth | JWT d'accès (15 min) + jeton de rafraîchissement opaque (60 j, rotatif, haché SHA-256) ; mots de passe en **argon2** |
+| **Isolation** | **dans le code** : `userId` toujours issu du JWT, chaque écriture filtrée sur `{ id, userId }` |
+| Fichiers | reçus stockés **en base** (`bytea`), servis par `GET /api/receipts/:id` authentifié |
 
-> **Pourquoi Supabase plutôt que NestJS** : le cahier des charges (§3.2, §7) exige explicitement la
-> Row Level Security. Supabase la fournit au niveau du moteur Postgres — la garantie d'étanchéité
-> ne dépend alors plus du code applicatif.
+> **Pourquoi ce revirement (Supabase → NestJS/Neon)** : le plan gratuit Supabase plafonne à
+> **2 projets actifs par propriétaire**, et les deux places sont prises (`systemcollaboratif`,
+> `qardan-hassana`). Neon, lui, autorise 100 projets gratuits qui **n'expirent pas** — contrairement
+> au Postgres gratuit de Render, supprimé au bout de 30 jours, ce qui a mis hors service l'API de
+> Preventix-360.
+>
+> ⚠️ **Ce qu'on perd, et qu'il faut savoir** : la Row Level Security exigée au §3.2 du cahier des
+> charges était garantie par le **moteur Postgres**. Elle est désormais garantie par le **code** de
+> `apps/api/src/modules/data/data.service.ts`. Une seule méthode qui oublierait le `userId`
+> exposerait les données d'autrui — ce que la RLS rendait impossible. Toute nouvelle écriture doit
+> donc suivre les deux règles écrites en tête de ce fichier.
 
 > **Écart assumé vs cahier des charges** : le §3.1 recommandait Flutter. Le projet part en
 > **React Expo**, standard de l'utilisateur pour toute nouvelle app mobile. Tous les types de
@@ -79,10 +88,10 @@ ma-finance-perso/
 ├─ claudemap.md               ← ce fichier
 ├─ cahier-des-charges.md      ← source de vérité fonctionnelle
 ├─ apps/mobile/               ← l'application Expo (code dans src/)
+├─ apps/api/                  ← l'API NestJS (Prisma + migrations SQL)
 ├─ packages/design-tokens/    ← DA : couleurs, élévations, mouvement, typo
 ├─ packages/core/             ← moteur de calcul pur + tests
-├─ packages/supabase/         ← client + types générés
-└─ supabase/migrations/       ← schéma SQL + policies RLS
+└─ render.yaml                ← déploiement de l'API (sans base : elle vit chez Neon)
 ```
 
 ---
@@ -245,16 +254,21 @@ ressaisir un mois corrige au lieu de doubler.
   abandonné et l'écran le dit.
 - **`notifyOnce` mémorise les alertes déjà émises.** Sans cela la dérive re-notifierait à chaque
   ouverture jusqu'au rééquilibrage, et l'utilisateur couperait les notifications.
-- **Lecture des reçus via `new File(uri).bytes()`**, pas `fetch(file://).arrayBuffer()` : le
-  polyfill fetch de RN échoue silencieusement selon la plateforme.
+- **Le reçu part en `FormData` avec `{ uri, name, type }`**, pas en `Uint8Array` : React Native
+  lit le fichier lui-même pendant l'envoi, sans charger 5 Mo en mémoire JavaScript.
+- **Le renouvellement du jeton n'est tenté qu'une fois** par requête (`api.ts`). Boucler
+  masquerait une session morte et l'app tournerait indéfiniment sur un écran vide.
+- **La file d'attente est vidée à la déconnexion.** La rejouer sous le compte suivant lui
+  attribuerait des dépenses qui ne sont pas les siennes.
 
 ### ⚠️ Ce qui reste
 
-- **`supabase db push` n'a jamais été exécuté** : les migrations sont écrites et relues, mais
-  aucune n'a tourné contre un vrai Postgres.
+- **Pas de réinitialisation de mot de passe** : elle reposait sur le service d'e-mails de
+  Supabase. L'API n'a pas de fournisseur SMTP ; le lien « Mot de passe oublié ? » a donc été
+  retiré de l'écran de connexion plutôt que laissé en promesse non tenue.
 - Modification des **libellés** de comptes / sources de revenus / catégories depuis l'app
   (création à l'inscription uniquement pour l'instant).
-- Consultation d'un reçu déjà envoyé (`receiptUrl()` existe, l'écran de détail d'une dépense non).
+- Consultation d'un reçu déjà envoyé (`receiptSource()` existe, l'écran de détail d'une dépense non).
 - Connexion Google / Apple (§3.2 la donne en option).
 
 ---
@@ -262,7 +276,9 @@ ressaisir un mois corrige au lieu de doubler.
 ## 6. Règles de travail (à respecter à chaque session)
 
 1. **Aucun calcul financier dans un écran.** Tout passe par `packages/core`, qui est testé.
-2. **Aucun `user_id` transmis depuis le client.** C'est la RLS qui filtre, jamais le mobile.
+2. **Aucun `userId` transmis depuis le client.** L'API le lit dans le JWT. Et côté API, toute
+   écriture sur une ligne existante passe par `updateMany`/`deleteMany` filtré sur `{ id, userId }` —
+   jamais `update({ where: { id } })`, qui laisserait un UUID deviné modifier la ligne d'autrui.
 3. **Aucune couleur, ombre ou durée en dur** dans un `.tsx` — tout vient de `@mfp/design-tokens`.
 4. **Un seul graphique paramétrable** plutôt que N dupliqués (leçon des 20 bar charts Excel).
 5. **Montants stockés en entier** (unité mineure, ex. franc CFA entier) — jamais de flottant en base.
@@ -307,10 +323,16 @@ pnpm install                    # à la racine du projet
 pnpm --filter mobile fix        # aligne les versions natives sur le SDK
 pnpm mobile                     # démarre Expo (QR code → Expo Go)
 pnpm test                       # tests du moteur de calcul (Vitest)
-pnpm typecheck                  # TypeScript sur tout le monorepo
-pnpm db:push                    # applique les migrations Supabase
-pnpm db:types                   # régénère database.types.ts
+pnpm typecheck                  # TypeScript sur tout le monorepo (core + mobile + api)
+
+pnpm api                        # démarre l'API en local (http://localhost:3000/api)
+pnpm db:generate                # régénère le client Prisma
+pnpm db:migrate                 # applique les migrations en attente (jamais `migrate dev` en prod)
+pnpm db:studio                  # inspecte la base dans le navigateur
 ```
+
+L'API a besoin de `apps/api/.env` (voir `.env.example`) :
+`DATABASE_URL` (chaîne **pooled** de Neon) et `JWT_SECRET` (32 caractères minimum).
 
 Depuis la racine du kit, pour tester sur le téléphone :
 

@@ -37,7 +37,7 @@ export type ExpensePayload = {
   spentOn: string;
   amount: number;
   note?: string;
-  receiptPath?: string;
+  receiptId?: string;
 };
 export type IncomePayload = { sourceId: string; month: string; amount: number; note?: string };
 export type BalancesPayload = {
@@ -49,23 +49,24 @@ export type InvestmentsPayload = {
   amounts: { assetClass: string; amount: number }[];
 };
 /**
- * Champs modifiables des réglages, en nomenclature Postgres.
- * Typé explicitement plutôt qu'en `Record<string, unknown>` : c'est le seul
- * moyen que le client Supabase vérifie les noms de colonnes à la compilation.
+ * Champs modifiables des réglages.
+ *
+ * Typé explicitement plutôt qu'en `Record<string, unknown>` : c'est ce qui fait
+ * échouer à la compilation un champ absent de `UpdateSettingsDto` côté API, où
+ * `forbidNonWhitelisted` le rejetterait sinon à l'exécution.
  */
 export type SettingsPatch = {
-  display_name?: string | null;
   currency?: string;
-  birth_date?: string | null;
-  safe_withdrawal_rate?: number;
-  inflation_rate?: number;
-  expected_return?: number;
-  monthly_investment?: number;
-  average_window_months?: number;
-  drift_threshold?: number;
-  life_expectancy?: number;
-  inheritance_target_age?: number;
-  biometric_lock?: boolean;
+  birthDate?: string | null;
+  safeWithdrawalRate?: number;
+  inflationRate?: number;
+  expectedReturn?: number;
+  monthlyInvestment?: number;
+  averageWindowMonths?: number;
+  driftThreshold?: number;
+  lifeExpectancy?: number;
+  inheritanceTargetAge?: number;
+  biometricLock?: boolean;
 };
 
 export type GoalPayload = {
@@ -142,22 +143,15 @@ export async function isOnline(): Promise<boolean> {
 }
 
 /**
- * Reconnaît une panne de réseau parmi les erreurs remontées par supabase-js.
- * Seules celles-là justifient une mise en file : une contrainte violée ou une
- * policy RLS qui refuse la ligne se reproduiront à l'identique au rejeu, et
- * rejouer indéfiniment une erreur métier remplirait la file sans jamais la vider.
+ * Résultat d'un envoi.
+ *
+ * `retryable` remplace l'ancienne reconnaissance de panne réseau **par le texte
+ * du message** : le client HTTP distingue déjà `NetworkError` d'une `ApiError`,
+ * et se fier au libellé cassait dès que le serveur changeait sa formulation.
+ * Seules les erreurs rejouables restent en file : un 400 se reproduirait à
+ * l'identique et remplirait la file sans jamais la vider.
  */
-export function isNetworkError(message: string): boolean {
-  const m = message.toLowerCase();
-  return (
-    m.includes("network request failed") ||
-    m.includes("failed to fetch") ||
-    m.includes("networkerror") ||
-    m.includes("timeout") ||
-    m.includes("timed out") ||
-    m.includes("connection")
-  );
-}
+export type ApplyResult = { error: string | null; retryable?: boolean };
 
 /* ------------------------------------------------------------------ *
  * Rejeu
@@ -180,7 +174,7 @@ export type FlushOutcome = {
  * le plus récent (les soldes et revenus passent par un `upsert`).
  */
 export async function flushQueue(
-  apply: (op: PendingOp) => Promise<{ error: string | null }>,
+  apply: (op: PendingOp) => Promise<ApplyResult>,
 ): Promise<FlushOutcome> {
   const ops = await readQueue();
   if (ops.length === 0) return { sent: 0, remaining: 0, dropped: 0 };
@@ -191,19 +185,20 @@ export async function flushQueue(
   let dropped = 0;
 
   for (const op of ops) {
-    const { error } = await apply(op);
+    const { error, retryable } = await apply(op);
     if (!error) {
       sent += 1;
       continue;
     }
-    if (isNetworkError(error)) {
+    if (retryable) {
       // Le réseau est retombé : inutile d'essayer les suivantes maintenant,
       // et il faut préserver l'ordre — on garde tout le reste tel quel.
       kept.push(op, ...ops.slice(ops.indexOf(op) + 1));
       break;
     }
-    // Erreur métier : on retente quelques fois (une contrainte peut se résoudre
-    // si l'opération précédente de la file crée la ligne attendue), puis on jette.
+    // Erreur métier : on retente quelques fois (une référence manquante peut se
+    // résoudre si l'opération précédente de la file crée la ligne attendue),
+    // puis on jette.
     const attempts = op.attempts + 1;
     if (attempts >= MAX_ATTEMPTS) dropped += 1;
     else kept.push({ ...op, attempts });

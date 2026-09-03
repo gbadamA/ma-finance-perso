@@ -1,0 +1,346 @@
+// Schéma de Ma Finance Perso — reprend le §4 du cahier des charges.
+//
+// Transposition du schéma Supabase (supabase/migrations/) vers une base Neon
+// pilotée par l'API NestJS. Deux différences structurantes :
+//
+//  1. **`User` nous appartient.** Il n'y a plus `auth.users` de Supabase :
+//     l'API gère elle-même l'inscription, le hachage du mot de passe et les JWT.
+//
+//  2. **Plus de RLS.** L'isolation des données ne repose plus sur des policies
+//     Postgres mais sur le code : chaque requête est filtrée par le `userId`
+//     extrait du jeton. C'est le prix du passage de Supabase à une API maison —
+//     une requête qui oublierait ce filtre exposerait les données d'autrui.
+//     D'où la règle rappelée en tête de `src/modules/data/data.service.ts` :
+//     toute écriture est filtrée sur `{ id, userId }`, jamais sur l'id seul.
+//
+// ⚠️ MONTANTS : `BigInt`, exprimé dans l'unité mineure de la devise (franc
+// entier pour XOF, centime pour EUR). Jamais de flottant — douze mois de
+// dépenses additionnées en `Float` dérivent visiblement.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma 7 : l'URL ne vit plus ici. Les migrations la lisent depuis
+// `prisma.config.ts`, et le client la recoit via un adaptateur (cf.
+// `src/prisma/prisma.service.ts`).
+datasource db {
+  provider = "postgresql"
+}
+
+enum AccountKind {
+  liquide
+  compte
+  epargne
+  investissement
+}
+
+enum IncomeKind {
+  passif
+  actif
+}
+
+enum GoalKind {
+  fortune
+  revenu_passif
+}
+
+enum GoalHorizon {
+  court
+  moyen
+  long
+  minimum
+  ideal
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  settings          Settings?
+  accounts          Account[]
+  accountSnapshots  AccountSnapshot[]
+  incomeSources     IncomeSource[]
+  incomeEntries     IncomeEntry[]
+  expenseCategories ExpenseCategory[]
+  expenseEntries    ExpenseEntry[]
+  assets            Asset[]
+  assetValuations   AssetValuation[]
+  investmentTargets InvestmentTarget[]
+  investmentSnaps   InvestmentSnapshot[]
+  goals             FinancialGoal[]
+  savingsActions    SavingsAction[]
+  receipts          Receipt[]
+  refreshTokens     RefreshToken[]
+
+  @@map("users")
+}
+
+/// Jeton de rafraîchissement, stocké haché : une fuite de la base ne doit pas
+/// permettre de rouvrir les sessions.
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Settings {
+  userId String @id
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  displayName String?
+  currency    String  @default("XOF")
+  birthDate   String? // AAAA-MM-JJ ; en texte pour éviter tout décalage de fuseau
+
+  /// Taux en POINTS de pourcentage (4 = 4 %), comme dans le classeur Excel.
+  safeWithdrawalRate  Float  @default(4)
+  inflationRate       Float  @default(3)
+  expectedReturn      Float  @default(7)
+  monthlyInvestment   BigInt @default(0)
+  averageWindowMonths Int    @default(6)
+  driftThreshold      Float  @default(5)
+  lifeExpectancy      Int    @default(80)
+  inheritanceTargetAge Int   @default(90)
+
+  /// Verrouillage biométrique local — suit l'utilisateur d'un appareil à l'autre.
+  biometricLock Boolean  @default(false)
+  updatedAt     DateTime @updatedAt
+
+  @@map("settings")
+}
+
+model Account {
+  id       String      @id @default(uuid())
+  userId   String
+  user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name     String
+  kind     AccountKind @default(compte)
+  currency String      @default("XOF")
+  position Int         @default(0)
+  archived Boolean     @default(false)
+
+  snapshots AccountSnapshot[]
+
+  @@index([userId])
+  @@map("accounts")
+}
+
+model AccountSnapshot {
+  id        String  @id @default(uuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  /// Normalisé au 1er du mois : la saisie est mensuelle.
+  month   DateTime @db.Date
+  balance BigInt
+  note    String?
+
+  /// Un seul relevé par compte et par mois : une seconde saisie corrige la première.
+  @@unique([accountId, month])
+  @@index([userId, month])
+  @@map("account_snapshots")
+}
+
+model IncomeSource {
+  id     String     @id @default(uuid())
+  userId String
+  user   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name   String
+  kind   IncomeKind
+
+  /// Un revenu d'investissement est passif MAIS exclu de la colonne
+  /// « Revenus (sans invest) » du classeur : d'où ce drapeau distinct.
+  isInvestment Boolean @default(false)
+  position     Int     @default(0)
+  archived     Boolean @default(false)
+
+  entries IncomeEntry[]
+
+  @@index([userId])
+  @@map("income_sources")
+}
+
+model IncomeEntry {
+  id       String       @id @default(uuid())
+  userId   String
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceId String
+  source   IncomeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  month  DateTime @db.Date
+  amount BigInt
+  note   String?
+
+  @@unique([sourceId, month])
+  @@index([userId, month])
+  @@map("income_entries")
+}
+
+model ExpenseCategory {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Clé stable qui pilote la couleur du camembert (cf. design-tokens).
+  key      String
+  label    String
+  position Int     @default(0)
+  archived Boolean @default(false)
+
+  entries ExpenseEntry[]
+
+  @@unique([userId, key])
+  @@map("expense_categories")
+}
+
+model ExpenseEntry {
+  id         String          @id @default(uuid())
+  userId     String
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  /// Date complète : la dépense se saisit sur le moment, pas en fin de mois.
+  spentOn DateTime @db.Date
+  amount  BigInt
+  note    String?
+
+  receiptId String?  @unique
+  receipt   Receipt? @relation(fields: [receiptId], references: [id], onDelete: SetNull)
+
+  @@index([userId, spentOn])
+  @@index([categoryId])
+  @@map("expense_entries")
+}
+
+/// Photo de reçu.
+///
+/// ⚠️ Stockée **en base** (`Bytes`) et non dans un service d'objets : Neon ne
+/// fournit que Postgres, et le disque de Render est éphémère — un fichier écrit
+/// sur disque disparaît au redéploiement. Le plan gratuit de Neon offre 0,5 Go :
+/// à ~1 Mo par reçu, cela laisse quelques centaines de justificatifs. L'API
+/// refuse au-delà de 5 Mo par fichier.
+model Receipt {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mimeType  String
+  sizeBytes Int
+  data      Bytes
+  createdAt DateTime @default(now())
+
+  expense ExpenseEntry?
+
+  @@index([userId])
+  @@map("receipts")
+}
+
+model Asset {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category     String
+  name         String
+  purchaseDate DateTime? @db.Date
+
+  purchasePrice   BigInt @default(0)
+  /// Dette adossée au bien : elle se soustrait de la fortune totale (§5.1).
+  debt            BigInt @default(0)
+  maintenanceCost BigInt @default(0)
+  currentValue    BigInt @default(0)
+
+  conditionScore Int?
+  archived       Boolean @default(false)
+
+  valuations AssetValuation[]
+
+  @@index([userId])
+  @@map("assets")
+}
+
+model AssetValuation {
+  id      String   @id @default(uuid())
+  userId  String
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assetId String
+  asset   Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  valuedOn DateTime @db.Date
+  value   BigInt
+
+  @@unique([assetId, valuedOn])
+  @@index([userId])
+  @@map("asset_valuations")
+}
+
+model InvestmentTarget {
+  id         String @id @default(uuid())
+  userId     String
+  user       User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assetClass String
+
+  /// « Portfolio Idéal » : part visée, en points de pourcentage.
+  targetPercent Float
+  position      Int   @default(0)
+
+  @@unique([userId, assetClass])
+  @@map("investment_targets")
+}
+
+model InvestmentSnapshot {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assetClass String
+  month      DateTime @db.Date
+
+  /// « Portfolio Actuel » : montant réellement détenu.
+  amount BigInt @default(0)
+
+  @@unique([userId, assetClass, month])
+  @@index([userId, month])
+  @@map("investment_snapshots")
+}
+
+model FinancialGoal {
+  id      String      @id @default(uuid())
+  userId  String
+  user    User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind    GoalKind
+  horizon GoalHorizon
+  label   String
+
+  targetAmount BigInt
+
+  /// La date d'atteinte est RECALCULÉE à la volée par le moteur FIRE et n'est
+  /// pas stockée : elle dépend d'hypothèses qui changent à chaque mouvement de
+  /// curseur du simulateur.
+  @@unique([userId, kind, horizon])
+  @@map("financial_goals")
+}
+
+model SavingsAction {
+  id       String  @id @default(uuid())
+  userId   String
+  user     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category String
+  label    String
+  feasible Boolean @default(true)
+
+  initialExpense BigInt  @default(0)
+  newExpense     BigInt  @default(0)
+  done           Boolean @default(false)
+  position       Int     @default(0)
+
+  @@index([userId])
+  @@map("savings_actions")
+}

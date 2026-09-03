@@ -1,10 +1,10 @@
 /**
  * Session utilisateur (§3.2 du cahier des charges).
  *
- * En l'absence de projet Supabase configuré, l'app ouvre une **session de
- * démonstration** locale. Cela permet de développer et de montrer l'interface
- * avant que la base existe, sans jamais mélanger les deux modes : `isDemo`
- * est exposé pour que l'interface l'affiche explicitement.
+ * Parle à l'API NestJS. En l'absence d'API configurée, l'app ouvre une
+ * **session de démonstration** locale : on peut montrer l'interface avant que
+ * le serveur soit déployé, sans jamais mélanger les deux modes — `isDemo` est
+ * exposé pour que l'interface l'affiche explicitement.
  */
 
 import {
@@ -16,14 +16,21 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { Session } from "@supabase/supabase-js";
-import { isSupabaseConfigured, supabase } from "./supabase";
+import {
+  ApiError,
+  apiRequest,
+  clearTokens,
+  isApiConfigured,
+  loadTokens,
+  saveTokens,
+  type Tokens,
+} from "./api";
+import { clearQueue } from "./queue";
 
 export type AuthState = {
-  session: Session | null;
-  /** `true` tant qu'on n'a pas encore relu la session persistée. */
+  /** `true` tant qu'on n'a pas encore relu les jetons persistés. */
   loading: boolean;
-  /** Aucune base configurée : les données affichées sont un jeu de démonstration. */
+  /** Aucune API configurée : les données affichées sont un jeu de démonstration. */
   isDemo: boolean;
   /** Session ouverte (réelle ou démo). */
   isSignedIn: boolean;
@@ -31,75 +38,91 @@ export type AuthState = {
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
   signUp: (email: string, password: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
-  resetPassword: (email: string) => Promise<{ error: string | null }>;
-  /** Ouvre la session de démonstration (uniquement hors Supabase). */
+  /** Ouvre la session de démonstration (uniquement hors API configurée). */
   enterDemo: () => void;
 };
 
 const AuthContext = createContext<AuthState | null>(null);
 
+const EMAIL_KEY = "mfp.email";
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [email, setEmail] = useState<string | null>(null);
+  const [signedIn, setSignedIn] = useState(false);
   const [demoSession, setDemoSession] = useState(false);
 
   useEffect(() => {
-    if (!supabase) {
-      setLoading(false);
-      return;
-    }
     let active = true;
-    supabase.auth.getSession().then(({ data }) => {
+    void (async () => {
+      if (!isApiConfigured) {
+        if (active) setLoading(false);
+        return;
+      }
+      const tokens = await loadTokens();
       if (!active) return;
-      setSession(data.session);
+      setSignedIn(Boolean(tokens));
       setLoading(false);
-    });
-    const { data: subscription } = supabase.auth.onAuthStateChange((_event, next) => {
-      setSession(next);
-    });
+    })();
     return () => {
       active = false;
-      subscription.subscription.unsubscribe();
     };
   }, []);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    if (!supabase) return { error: "Supabase n'est pas configuré." };
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    return { error: error ? translateAuthError(error.message) : null };
-  }, []);
+  const authenticate = useCallback(
+    async (path: "login" | "register", mail: string, password: string) => {
+      if (!isApiConfigured) return { error: "L'API n'est pas configurée." };
+      try {
+        const tokens = await apiRequest<Tokens>(`/auth/${path}`, {
+          method: "POST",
+          body: { email: mail, password },
+          anonymous: true,
+        });
+        await saveTokens(tokens);
+        setEmail(mail);
+        setSignedIn(true);
+        return { error: null };
+      } catch (error) {
+        return { error: describe(error) };
+      }
+    },
+    [],
+  );
 
-  const signUp = useCallback(async (email: string, password: string) => {
-    if (!supabase) return { error: "Supabase n'est pas configuré." };
-    const { error } = await supabase.auth.signUp({ email, password });
-    return { error: error ? translateAuthError(error.message) : null };
-  }, []);
+  const signIn = useCallback(
+    (mail: string, password: string) => authenticate("login", mail, password),
+    [authenticate],
+  );
 
-  const resetPassword = useCallback(async (email: string) => {
-    if (!supabase) return { error: "Supabase n'est pas configuré." };
-    const { error } = await supabase.auth.resetPasswordForEmail(email);
-    return { error: error ? translateAuthError(error.message) : null };
-  }, []);
+  const signUp = useCallback(
+    (mail: string, password: string) => authenticate("register", mail, password),
+    [authenticate],
+  );
 
   const signOut = useCallback(async () => {
     setDemoSession(false);
-    if (supabase) await supabase.auth.signOut();
+    setSignedIn(false);
+    setEmail(null);
+
+    // La file d'attente porte les saisies d'un utilisateur donné : les rejouer
+    // sous le compte suivant lui attribuerait des dépenses qui ne sont pas les
+    // siennes. On la vide donc à la déconnexion.
+    await clearQueue();
+    await clearTokens();
   }, []);
 
   const value = useMemo<AuthState>(
     () => ({
-      session,
       loading,
-      isDemo: !isSupabaseConfigured && demoSession,
-      isSignedIn: Boolean(session) || demoSession,
-      email: session?.user.email ?? (demoSession ? "demo@mafinanceperso.ci" : null),
+      isDemo: !isApiConfigured && demoSession,
+      isSignedIn: signedIn || demoSession,
+      email: email ?? (demoSession ? "demo@mafinanceperso.ci" : null),
       signIn,
       signUp,
       signOut,
-      resetPassword,
       enterDemo: () => setDemoSession(true),
     }),
-    [session, loading, demoSession, signIn, signUp, signOut, resetPassword],
+    [loading, demoSession, signedIn, email, signIn, signUp, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -112,20 +135,19 @@ export function useAuth(): AuthState {
 }
 
 /**
- * Traduit les messages de Supabase Auth.
- * Ils arrivent en anglais et parlent de « credentials » — illisible pour
- * l'utilisateur visé. Les cas non couverts sont renvoyés tels quels plutôt
- * que masqués par un « une erreur est survenue » qui n'aide personne.
+ * Traduit une erreur d'API en message lisible.
+ *
+ * L'API répond déjà en français ; on couvre ici les cas qu'elle ne formule pas
+ * elle-même — panne réseau, ou statut sans message.
  */
-function translateAuthError(message: string): string {
-  const m = message.toLowerCase();
-  if (m.includes("invalid login credentials")) return "E-mail ou mot de passe incorrect.";
-  if (m.includes("email not confirmed")) return "Confirmez votre e-mail avant de vous connecter.";
-  if (m.includes("user already registered")) return "Un compte existe déjà avec cet e-mail.";
-  if (m.includes("password should be at least")) {
-    return "Le mot de passe doit faire au moins 6 caractères.";
+function describe(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 0) return "L'API n'est pas configurée.";
+    if (error.status === 401) return "E-mail ou mot de passe incorrect.";
+    if (error.status === 409) return "Un compte existe déjà avec cet e-mail.";
+    return error.message;
   }
-  if (m.includes("unable to validate email")) return "Adresse e-mail invalide.";
-  if (m.includes("network")) return "Pas de connexion. Réessayez une fois en ligne.";
-  return message;
+  return "Pas de connexion. Réessayez une fois en ligne.";
 }
+
+export { EMAIL_KEY };

@@ -6,9 +6,9 @@
  * (quelques milliers de lignes au bout de dix ans) : les paginer écran par
  * écran coûterait plus cher en allers-retours que de tout garder en RAM.
  *
- * ⚠️ Aucune requête ne filtre sur `user_id` : c'est la RLS qui le fait (§3.2).
- * Si une requête d'ici renvoyait les données d'un autre utilisateur, le
- * problème serait dans les policies, pas ici.
+ * ⚠️ L'app n'envoie jamais d'identifiant d'utilisateur : l'API le lit dans le
+ * JWT. Si `/snapshot` renvoyait les données de quelqu'un d'autre, le problème
+ * serait dans `DataService` côté serveur, pas ici.
  */
 
 import {
@@ -37,8 +37,7 @@ import {
   type TargetAllocation,
   type UserSettings,
 } from "@mfp/core";
-import { rowMonth } from "@mfp/supabase";
-import { supabase } from "./supabase";
+import { apiRequest, isApiConfigured } from "./api";
 import { useAuth } from "./auth";
 
 export type Dataset = {
@@ -100,7 +99,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
-    if (isDemo || !supabase) {
+    if (isDemo || !isApiConfigured) {
       setData({ ...demoDataset(), biometricLock: false });
       setLoading(false);
       setError(null);
@@ -142,149 +141,17 @@ export function useCurrency(): CurrencyCode {
 }
 
 /* ------------------------------------------------------------------ *
- * Requêtes
+ * Requête
  * ------------------------------------------------------------------ */
 
+/**
+ * Un seul appel plutôt qu'un par module.
+ *
+ * L'API renvoie déjà exactement la forme de `Dataset` : la conversion des
+ * colonnes Postgres (`snake_case`, `date`) vers le domaine (`camelCase`,
+ * `MonthKey`) est faite côté serveur, dans `SnapshotService`. Le mobile ne
+ * refait donc aucun mappage — un seul endroit à corriger si le schéma bouge.
+ */
 async function fetchDataset(): Promise<Dataset> {
-  const client = supabase!;
-
-  // Une seule salve parallèle : douze allers-retours séquentiels sur une
-  // connexion mobile ivoirienne se voient à l'ouverture de l'app.
-  const [
-    settings,
-    accounts,
-    accountSnapshots,
-    incomeSources,
-    incomeEntries,
-    expenseCategories,
-    expenseEntries,
-    assets,
-    targets,
-    investmentSnapshots,
-    goals,
-    savingsActions,
-  ] = await Promise.all([
-    client.from("settings").select("*").maybeSingle(),
-    client.from("accounts").select("*").order("position"),
-    client.from("account_snapshots").select("*").order("month"),
-    client.from("income_sources").select("*").order("position"),
-    client.from("income_entries").select("*").order("month"),
-    client.from("expense_categories").select("*").order("position"),
-    client.from("expense_entries").select("*").order("spent_on"),
-    client.from("assets").select("*").eq("archived", false),
-    client.from("investment_targets").select("*").order("position"),
-    client.from("investment_snapshots").select("*").order("month"),
-    client.from("financial_goals").select("*"),
-    client.from("savings_actions").select("*").order("position"),
-  ]);
-
-  const failed = [
-    settings, accounts, accountSnapshots, incomeSources, incomeEntries,
-    expenseCategories, expenseEntries, assets, targets, investmentSnapshots,
-    goals, savingsActions,
-  ].find((r) => r.error);
-  if (failed?.error) throw new Error(failed.error.message);
-
-  return {
-    biometricLock: settings.data?.biometric_lock ?? false,
-
-    settings: settings.data
-      ? {
-          currency: settings.data.currency as CurrencyCode,
-          birthDate: settings.data.birth_date,
-          safeWithdrawalRate: Number(settings.data.safe_withdrawal_rate),
-          inflationRate: Number(settings.data.inflation_rate),
-          expectedReturn: Number(settings.data.expected_return),
-          monthlyInvestment: settings.data.monthly_investment,
-          averageWindowMonths: settings.data.average_window_months,
-          driftThreshold: Number(settings.data.drift_threshold),
-          lifeExpectancy: settings.data.life_expectancy,
-          inheritanceTargetAge: settings.data.inheritance_target_age,
-        }
-      : DEFAULT_SETTINGS,
-
-    accounts: (accounts.data ?? []).map((r) => ({
-      id: r.id,
-      name: r.name,
-      kind: r.kind,
-      currency: r.currency as CurrencyCode,
-      archived: r.archived,
-    })),
-
-    accountSnapshots: (accountSnapshots.data ?? []).map((r) => ({
-      accountId: r.account_id,
-      month: rowMonth(r.month),
-      balance: r.balance,
-    })),
-
-    incomeSources: (incomeSources.data ?? []).map((r) => ({
-      id: r.id,
-      name: r.name,
-      kind: r.kind,
-      isInvestment: r.is_investment,
-    })),
-
-    incomeEntries: (incomeEntries.data ?? []).map((r) => ({
-      id: r.id,
-      sourceId: r.source_id,
-      month: rowMonth(r.month),
-      amount: r.amount,
-    })),
-
-    expenseCategories: (expenseCategories.data ?? []).map((r) => ({
-      id: r.id,
-      key: r.key,
-      label: r.label,
-    })),
-
-    expenseEntries: (expenseEntries.data ?? []).map((r) => ({
-      id: r.id,
-      categoryId: r.category_id,
-      date: r.spent_on,
-      amount: r.amount,
-      note: r.note,
-      receiptPath: r.receipt_path,
-    })),
-
-    assets: (assets.data ?? []).map((r) => ({
-      id: r.id,
-      category: r.category,
-      name: r.name,
-      purchaseDate: r.purchase_date,
-      purchasePrice: r.purchase_price,
-      debt: r.debt,
-      maintenanceCost: r.maintenance_cost,
-      currentValue: r.current_value,
-      conditionScore: r.condition_score,
-    })),
-
-    targets: (targets.data ?? []).map((r) => ({
-      assetClass: r.asset_class,
-      targetPercent: Number(r.target_percent),
-    })),
-
-    investmentSnapshots: (investmentSnapshots.data ?? []).map((r) => ({
-      assetClass: r.asset_class,
-      month: rowMonth(r.month),
-      amount: r.amount,
-    })),
-
-    goals: (goals.data ?? []).map((r) => ({
-      id: r.id,
-      kind: r.kind,
-      horizon: r.horizon,
-      label: r.label,
-      targetAmount: r.target_amount,
-    })),
-
-    savingsActions: (savingsActions.data ?? []).map((r) => ({
-      id: r.id,
-      category: r.category,
-      label: r.label,
-      feasible: r.feasible,
-      initialExpense: r.initial_expense,
-      newExpense: r.new_expense,
-      done: r.done,
-    })),
-  };
+  return apiRequest<Dataset>("/snapshot");
 }

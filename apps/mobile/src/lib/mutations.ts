@@ -1,23 +1,23 @@
 /**
- * Écritures en base.
+ * Écritures du dossier financier.
  *
  * Chaque écriture est décrite comme une **opération rejouable** (`PendingOp`),
  * ce qui permet de la mettre en file quand le réseau manque et de la rejouer
- * telle quelle plus tard. Les écrans n'ont donc à connaître ni les noms de
- * colonnes Postgres, ni l'état du réseau.
+ * telle quelle plus tard. Les écrans n'ont donc à connaître ni les routes de
+ * l'API, ni l'état du réseau.
  *
- * ⚠️ Aucune de ces fonctions n'envoie de `user_id` : le trigger `set_user_id()`
- * le renseigne côté base et la policy RLS le vérifie (§3.2).
+ * ⚠️ Aucune de ces fonctions n'envoie d'identifiant d'utilisateur : l'API le lit
+ * dans le JWT (§3.2). En envoyer un ici serait au mieux ignoré, au pire une
+ * fausse impression de contrôle d'accès.
  */
 
-import { monthToDate } from "@mfp/supabase";
-import { supabase } from "./supabase";
+import { ApiError, apiRequest, isApiConfigured, isRetryable } from "./api";
 import {
   enqueue,
   flushQueue,
-  isNetworkError,
   isOnline,
   pendingCount,
+  type ApplyResult,
   type PendingOp,
   type SettingsPatch,
 } from "./queue";
@@ -34,108 +34,66 @@ const DEMO_ERROR = "Mode démonstration : la saisie n'est pas enregistrée.";
  * Exécution d'une opération
  * ------------------------------------------------------------------ */
 
-/** Envoie réellement une opération. C'est aussi ce que rejoue la file. */
-export async function applyOp(op: PendingOp): Promise<{ error: string | null }> {
-  if (!supabase) return { error: DEMO_ERROR };
-  const client = supabase;
-
+/** Traduit une opération en requête. C'est aussi ce que rejoue la file. */
+function send(op: PendingOp): Promise<unknown> {
   switch (op.kind) {
-    case "expense.add": {
-      const { error } = await client.from("expense_entries").insert({
-        category_id: op.payload.categoryId,
-        spent_on: op.payload.spentOn,
-        amount: op.payload.amount,
-        note: op.payload.note?.trim() || null,
-        receipt_path: op.payload.receiptPath ?? null,
+    case "expense.add":
+      return apiRequest("/expenses", { method: "POST", body: op.payload });
+
+    case "income.set":
+      // `PUT` et non `POST` : ressaisir un mois **corrige** au lieu de doubler,
+      // comme une case du classeur. L'API fait l'upsert sur (source, mois).
+      return apiRequest("/income", { method: "PUT", body: op.payload });
+
+    case "balances.set":
+      return apiRequest("/balances", { method: "PUT", body: op.payload });
+
+    case "investments.set":
+      return apiRequest("/investments", { method: "PUT", body: op.payload });
+
+    case "asset.value":
+      return apiRequest(`/assets/${op.payload.assetId}/value`, {
+        method: "PATCH",
+        body: { value: op.payload.value },
       });
-      return { error: error?.message ?? null };
-    }
 
-    case "income.set": {
-      // `upsert` : ressaisir un mois **corrige** au lieu de doubler, comme une
-      // case du classeur (contrainte unique `source_id, month`).
-      const { error } = await client.from("income_entries").upsert(
-        {
-          source_id: op.payload.sourceId,
-          month: monthToDate(op.payload.month),
-          amount: op.payload.amount,
-          note: op.payload.note?.trim() || null,
-        },
-        { onConflict: "source_id,month" },
-      );
-      return { error: error?.message ?? null };
-    }
+    case "goal.upsert":
+      return apiRequest("/goals", { method: "PUT", body: op.payload });
 
-    case "balances.set": {
-      if (op.payload.balances.length === 0) return { error: null };
-      const { error } = await client.from("account_snapshots").upsert(
-        op.payload.balances.map((b) => ({
-          account_id: b.accountId,
-          month: monthToDate(op.payload.month),
-          balance: b.balance,
-        })),
-        { onConflict: "account_id,month" },
-      );
-      return { error: error?.message ?? null };
-    }
+    case "goal.delete":
+      return apiRequest(`/goals/${op.payload.id}`, { method: "DELETE" });
 
-    case "investments.set": {
-      if (op.payload.amounts.length === 0) return { error: null };
-      const { error } = await client.from("investment_snapshots").upsert(
-        op.payload.amounts.map((a) => ({
-          asset_class: a.assetClass,
-          month: monthToDate(op.payload.month),
-          amount: a.amount,
-        })),
-        { onConflict: "user_id,asset_class,month" },
-      );
-      return { error: error?.message ?? null };
-    }
+    case "savings.toggle":
+      return apiRequest(`/savings/${op.payload.id}`, {
+        method: "PATCH",
+        body: { done: op.payload.done },
+      });
 
-    case "asset.value": {
-      const { error } = await client
-        .from("assets")
-        .update({ current_value: op.payload.value })
-        .eq("id", op.payload.assetId);
-      return { error: error?.message ?? null };
-    }
+    case "settings.update":
+      return apiRequest("/settings", { method: "PATCH", body: op.payload });
+  }
+}
 
-    case "goal.upsert": {
-      const { error } = await client.from("financial_goals").upsert(
-        {
-          kind: op.payload.kind,
-          horizon: op.payload.horizon,
-          label: op.payload.label,
-          target_amount: op.payload.targetAmount,
-        },
-        { onConflict: "user_id,kind,horizon" },
-      );
-      return { error: error?.message ?? null };
-    }
+/**
+ * Envoie une opération et qualifie l'échec.
+ *
+ * `retryable` sépare « le réseau a manqué » de « le serveur a refusé » : seul le
+ * premier cas mérite un rejeu, le second se reproduirait à l'identique.
+ */
+export async function applyOp(op: PendingOp): Promise<ApplyResult> {
+  if (!isApiConfigured) return { error: DEMO_ERROR };
 
-    case "goal.delete": {
-      const { error } = await client.from("financial_goals").delete().eq("id", op.payload.id);
-      return { error: error?.message ?? null };
-    }
-
-    case "savings.toggle": {
-      const { error } = await client
-        .from("savings_actions")
-        .update({ done: op.payload.done })
-        .eq("id", op.payload.id);
-      return { error: error?.message ?? null };
-    }
-
-    case "settings.update": {
-      // PostgREST exige un filtre sur un UPDATE. `user_id is not null` est
-      // toujours vrai, et la RLS restreint déjà la portée à la ligne de
-      // l'utilisateur — on n'a donc pas besoin de connaître son identifiant.
-      const { error } = await client
-        .from("settings")
-        .update(op.payload)
-        .not("user_id", "is", null);
-      return { error: error?.message ?? null };
-    }
+  try {
+    await send(op);
+    return { error: null };
+  } catch (error) {
+    return {
+      error:
+        error instanceof ApiError || error instanceof Error
+          ? error.message
+          : "Enregistrement impossible.",
+      retryable: isRetryable(error),
+    };
   }
 }
 
@@ -143,21 +101,21 @@ export async function applyOp(op: PendingOp): Promise<{ error: string | null }> 
  * Tente l'envoi, met en file si le réseau manque.
  *
  * On teste la connectivité **avant** d'essayer : sans cela chaque saisie
- * hors-ligne attend le timeout HTTP (plusieurs secondes) avant d'être mise en
+ * hors-ligne attend le délai d'expiration HTTP (45 s) avant d'être mise en
  * file, et l'utilisateur croit l'app bloquée.
  */
 async function perform(op: PendingOp): Promise<MutationResult> {
-  if (!supabase) return { error: DEMO_ERROR };
+  if (!isApiConfigured) return { error: DEMO_ERROR };
 
   if (!(await isOnline())) {
     await enqueue(op);
     return { error: null, queued: true };
   }
 
-  const { error } = await applyOp(op);
+  const { error, retryable } = await applyOp(op);
   if (!error) return { error: null };
 
-  if (isNetworkError(error)) {
+  if (retryable) {
     await enqueue(op);
     return { error: null, queued: true };
   }
@@ -186,7 +144,8 @@ export function addExpense(input: {
   /** Entier d'unité mineure. */
   amount: number;
   note?: string;
-  receiptPath?: string;
+  /** Identifiant du reçu déjà téléversé, le cas échéant. */
+  receiptId?: string;
 }): Promise<MutationResult> {
   return perform({ kind: "expense.add", payload: input });
 }
@@ -243,7 +202,7 @@ export function updateSettings(payload: SettingsPatch): Promise<MutationResult> 
 }
 
 /* ------------------------------------------------------------------ *
- * Allocation cible — écriture directe
+ * Écritures directes
  * ------------------------------------------------------------------ */
 
 /**
@@ -254,14 +213,26 @@ export function updateSettings(payload: SettingsPatch): Promise<MutationResult> 
 export async function setTargetAllocation(
   targets: readonly { assetClass: string; targetPercent: number }[],
 ): Promise<MutationResult> {
-  if (!supabase) return { error: DEMO_ERROR };
-  const { error } = await supabase.from("investment_targets").upsert(
-    targets.map((t, index) => ({
-      asset_class: t.assetClass,
-      target_percent: t.targetPercent,
-      position: index + 1,
-    })),
-    { onConflict: "user_id,asset_class" },
-  );
-  return { error: error?.message ?? null };
+  if (!isApiConfigured) return { error: DEMO_ERROR };
+  try {
+    await apiRequest("/targets", { method: "PUT", body: { targets: [...targets] } });
+    return { error: null };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Enregistrement impossible." };
+  }
+}
+
+/**
+ * Supprime une dépense. Pas de mise en file non plus : la ligne visée existe
+ * déjà en base, et rejouer une suppression après un retour de réseau viserait
+ * un identifiant que l'utilisateur ne voit plus depuis longtemps.
+ */
+export async function deleteExpense(id: string): Promise<MutationResult> {
+  if (!isApiConfigured) return { error: DEMO_ERROR };
+  try {
+    await apiRequest(`/expenses/${id}`, { method: "DELETE" });
+    return { error: null };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Suppression impossible." };
+  }
 }

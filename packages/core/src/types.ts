@@ -83,7 +83,8 @@ export type ExpenseEntry = {
   date: string;
   amount: number;
   note?: string | null;
-  receiptPath?: string | null;
+  /** Identifiant du reçu joint (`GET /receipts/:id`). */
+  receiptId?: string | null;
 };
 
 /* ------------------------------------------------------------------ *
