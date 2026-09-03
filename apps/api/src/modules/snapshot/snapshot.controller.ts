@@ -1,7 +1,10 @@
 import { Controller, Get } from "@nestjs/common";
+import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { CurrentUser } from "../../auth/current-user.decorator";
 import { SnapshotService } from "./snapshot.service";
 
+@ApiTags("2 · Lecture")
+@ApiBearerAuth()
 @Controller("snapshot")
 export class SnapshotController {
   constructor(private readonly snapshot: SnapshotService) {}

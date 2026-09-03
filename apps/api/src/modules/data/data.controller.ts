@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, HttpCode, Param, Patch, Post, Put } from "@nestjs/common";
+import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { CurrentUser } from "../../auth/current-user.decorator";
 import { DataService } from "./data.service";
 import {
@@ -17,6 +18,8 @@ import {
  * Ecritures. Chaque route reçoit le `userId` du JWT via `@CurrentUser()` —
  * jamais du corps ni de l'URL (cf. l'en-tete de `DataService`).
  */
+@ApiTags("3 · Ecritures")
+@ApiBearerAuth()
 @Controller()
 export class DataController {
   constructor(private readonly data: DataService) {}

@@ -10,6 +10,7 @@ import {
   UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiTags } from "@nestjs/swagger";
 import type { Response } from "express";
 import { CurrentUser } from "../../auth/current-user.decorator";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -28,11 +29,29 @@ const ALLOWED = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
  * reçu, cela laisse quelques centaines de justificatifs. Passé ce cap, il
  * faudra un service d'objets (Cloudflare R2, 10 Go gratuits).
  */
+@ApiTags("4 · Recus")
+@ApiBearerAuth()
 @Controller("receipts")
 export class ReceiptsController {
   constructor(private readonly prisma: PrismaService) {}
 
   @Post()
+  // Sans ces deux decorateurs, Swagger presente un champ texte au lieu d'un
+  // selecteur de fichier, et le televersement est intestable depuis la page.
+  @ApiConsumes("multipart/form-data")
+  @ApiBody({
+    schema: {
+      type: "object",
+      required: ["file"],
+      properties: {
+        file: {
+          type: "string",
+          format: "binary",
+          description: "JPEG, PNG, WebP ou PDF — 5 Mo maximum.",
+        },
+      },
+    },
+  })
   @UseInterceptors(FileInterceptor("file", { limits: { fileSize: MAX_BYTES } }))
   async upload(
     @CurrentUser() userId: string,

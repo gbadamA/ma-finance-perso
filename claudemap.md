@@ -59,6 +59,7 @@
 | Auth | JWT d'accès (15 min) + jeton de rafraîchissement opaque (60 j, rotatif, haché SHA-256) ; mots de passe en **argon2** |
 | **Isolation** | **dans le code** : `userId` toujours issu du JWT, chaque écriture filtrée sur `{ id, userId }` |
 | Fichiers | reçus stockés **en base** (`bytea`), servis par `GET /api/receipts/:id` authentifié |
+| Doc | **Swagger sur `/api/docs`**, schémas générés depuis les DTO (plugin `@nestjs/swagger`) |
 
 > **Pourquoi ce revirement (Supabase → NestJS/Neon)** : le plan gratuit Supabase plafonne à
 > **2 projets actifs par propriétaire**, et les deux places sont prises (`systemcollaboratif`,

@@ -34,6 +34,22 @@ docker run -d --name mfp-pg -e POSTGRES_PASSWORD=mfp -e POSTGRES_DB=mfp -p 55432
 
 `DATABASE_URL=postgresql://postgres:mfp@localhost:55432/mfp`
 
+## Documentation interactive
+
+<https://ma-finance-perso-api.onrender.com/api/docs> — et `http://localhost:3000/api/docs` en local.
+
+Les schémas sont générés depuis les DTO par le plugin `@nestjs/swagger` déclaré dans
+`nest-cli.json` : les contraintes `class-validator` (bornes, énumérations, champs requis)
+apparaissent seules. **Ne pas ajouter d'`@ApiProperty` à la main** — ce serait une seconde source
+de vérité à maintenir en parallèle.
+
+Pour essayer un endpoint : `POST /api/auth/register`, copier le `accessToken`, cliquer
+**Authorize**, le coller. Il vit 15 minutes.
+
+⚠️ Helmet pose un CSP strict qui rendrait la page blanche. `main.ts` relâche `script-src` et
+`style-src` **sur cette seule route** ; les réponses JSON gardent la politique complète.
+`DOCS=off` désactive la page.
+
 ## Vérification
 
 ```bash
