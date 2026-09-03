@@ -56,6 +56,9 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": false
+    },
+    "extra": {
+      "apiUrl": "https://ma-finance-perso-api.onrender.com"
     }
   }
 }
